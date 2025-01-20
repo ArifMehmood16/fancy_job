@@ -3,6 +3,10 @@ import os
 import random
 import subprocess
 from datetime import datetime
+import shutil
+import win32com.client
+
+from commit_schedule import is_date_in_commit_schedule
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(script_dir)
@@ -40,9 +44,9 @@ def generate_random_commit_message():
         prompt,
         max_new_tokens=50,
         num_return_sequences=1,
-        temperature=0.9,  # Slightly higher for creativity
-        top_k=50,  # Limits sampling to top 50 logits
-        top_p=0.9,  # Nucleus sampling for diversity
+        temperature=0.9,
+        top_k=50,
+        top_p=0.9,
         truncation=True,
     )
     text = generated[0]["generated_text"]
@@ -57,11 +61,12 @@ def git_commit():
     # Stage the changes
     subprocess.run(["git", "add", "number.txt"])
     # Create commit with current date
-    if "FANCY_JOB_USE_LLM" in os.environ:
-        commit_message = generate_random_commit_message()
-    else:
-        date = datetime.now().strftime("%Y-%m-%d")
-        commit_message = f"Update number: {date}"
+    # if "FANCY_JOB_USE_LLM" in os.environ:
+    #     commit_message = generate_random_commit_message()
+    # else:
+    #     date = datetime.now().strftime("%Y-%m-%d")
+    #     commit_message = f"Update number: {date}"
+    commit_message = generate_random_commit_message()
     subprocess.run(["git", "commit", "-m", commit_message])
 
 
@@ -75,47 +80,72 @@ def git_push():
         print(result.stderr)
 
 
-def update_cron_with_random_time():
-    # Generate random hour (0-23) and minute (0-59)
-    random_hour = random.randint(0, 23)
-    random_minute = random.randint(0, 59)
+def update_task_scheduler():
+    # # Generate random hour (0-23) and minute (0-59)
+    # random_hour = random.randint(0, 23)
+    # random_minute = random.randint(0, 59)
+    random_hour = 17
+    random_minute = 25
 
-    # Define the new cron job command
-    new_cron_command = f"{random_minute} {random_hour} * * * cd {script_dir} && python3 {os.path.join(script_dir, 'update_number.py')}\n"
+    # Define task name
+    task_name = "UpdateNumberTask"
 
-    # Get the current crontab
-    cron_file = "/tmp/current_cron"
-    os.system(
-        f"crontab -l > {cron_file} 2>/dev/null || true"
-    )  # Save current crontab, or create a new one if empty
+    # Path to Python executable
+    python_path = shutil.which("python")
 
-    # Update the crontab file
-    with open(cron_file, "r") as file:
-        lines = file.readlines()
+    # Path to the script
+    script_path = os.path.join(script_dir, "update_number.py")
 
-    with open(cron_file, "w") as file:
-        for line in lines:
-            # Remove existing entry for `update_number.py` if it exists
-            if "update_number.py" not in line:
-                file.write(line)
-        # Add the new cron job at the random time
-        file.write(new_cron_command)
+    # Create a Task Scheduler object
+    scheduler = win32com.client.Dispatch("Schedule.Service")
+    scheduler.Connect()
+    root_folder = scheduler.GetFolder("\\")
 
-    # Load the updated crontab
-    os.system(f"crontab {cron_file}")
-    os.remove(cron_file)
+    # Delete existing task if it exists
+    try:
+        root_folder.DeleteTask(task_name, 0)
+    except Exception:
+        pass
 
-    print(f"Cron job updated to run at {random_hour}:{random_minute} tomorrow.")
+    # Create a new task
+    task_def = scheduler.NewTask(0)
+    trigger = task_def.Triggers.Create(1)  # Daily trigger
+    trigger.StartBoundary = datetime.now().strftime(f"%Y-%m-%dT{random_hour:02}:{random_minute:02}:00")
+    action = task_def.Actions.Create(0)  # Execute action
+    action.Path = python_path
+    action.Arguments = f'"{script_path}"'
+    task_def.RegistrationInfo.Description = "Update number script"
+    task_def.Settings.Enabled = True
+    task_def.Settings.StartWhenAvailable = True
+
+    # Register the task
+    root_folder.RegisterTaskDefinition(
+        task_name,
+        task_def,
+        6,  # Create or update the task
+        None,  # No user
+        None,  # No password
+        0,
+    )
+
+    print(f"Task Scheduler updated to run at {random_hour:02}:{random_minute:02}.")
 
 
 def main():
     try:
-        current_number = read_number()
-        new_number = current_number + 1
-        write_number(new_number)
-        git_commit()
-        git_push()
-        update_cron_with_random_time()
+        today_date = datetime.today().strftime("%Y-%m-%d")
+        output = is_date_in_commit_schedule("ARIF 25 !", today_date, "2025-01-19")
+        
+        iterations = 1
+        if output:
+            iterations = 7
+        for i in range(iterations):
+            current_number = read_number()
+            new_number = current_number + 1
+            write_number(new_number)
+            git_commit()
+            git_push()
+        update_task_scheduler()
     except Exception as e:
         print(f"Error: {str(e)}")
         exit(1)
